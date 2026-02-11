@@ -1,69 +1,67 @@
-# Walnut-AI-Support (W.A.S.) 🌰
+# Walnut-AI-Support (W.A.S.) | 核桃智能技术支持中台
 
-**W.A.S.** 是一款专为核桃编程（Walnut Programming）设计的智能技术支持系统。它基于 FastAPI 构建，通过集成 Groq (Llama 3.3) 大模型和 RAG（检索增强生成）技术，为老师提供 7x24 小时的金牌级技术支持响应。
+W.A.S. 是一套面向教育行业技术支持场景的 **RAG (Retrieval-Augmented Generation)** 解决方案。通过飞书机器人接口，为一线教师提供基于内部知识库的实时故障排查建议。
 
-## 🚀 核心特性
+## 📐 系统架构
 
-- **高效推理**：集成 Groq Llama-3.3-70b 模型，提供极速的语义理解与回复。
-- **智能 RAG (P2)**：基于向量检索（Semantic Search）的知识库引擎，精准匹配核桃内部 SOP。
-- **多轮会话 (P3)**：具备 30 分钟窗口期的短程记忆，支持上下文关联问答。
-- **异步处理**：采用 `BackgroundTasks` 机制，秒回飞书回调，彻底解决超时重试问题。
-- **健壮监控 (P0/P1)**：
-    - 结构化滚动日志记录 (`logs/was.log`)。
-    - 实时健康检查端点 (`/health`)，监控 Groq API 及知识库状态。
-
-## 🛠️ 技术栈
-
-- **Framework**: FastAPI (Python 3.11+)
-- **LLM Engine**: Groq (Llama-3.3-70b-versatile)
-- **Data Science**: Numpy (Vector computing)
-- **Messaging**: Feishu (ByteDance Lark) API
-- **DevOps**: Systemd, Git, Virtualenv
-
-## 📂 目录结构
-
-```text
-.
-├── core/
-│   ├── server.py           # FastAPI 服务入口 & 飞书协议处理
-│   ├── rag_engine.py       # AI 推理核心逻辑
-│   ├── vector_engine.py    # 语义检索实现 (P2)
-│   ├── session_manager.py  # 会话记忆管理 (P3)
-│   └── logger.py           # 结构化日志模块 (P0)
-├── data/
-│   ├── walnut_kb.json      # 核心知识库 (SOP/FAQ)
-│   └── vector_store.db     # 向量缓存数据库
-├── logs/                   # 服务运行日志
-└── infra/                  # 基础设施脚本与辅助工具
+```mermaid
+graph TD
+    User((飞书用户)) -->|发送消息/截图| Feishu[飞书服务器]
+    Feishu -->|Webhook POST /event| WAS[FastAPI Server]
+    
+    subgraph W.A.S. Core
+        WAS -->|1. 提取语义| Vector[Vector Engine]
+        Vector -->|2. 检索SOP| KB[(walnut_kb.json)]
+        WAS -->|3. 读取上下文| Session[(sessions.db)]
+        WAS -->|4. 多模态推理| Groq{Groq Llama 4 Vision}
+    end
+    
+    Groq -->|5. 生成回复| WAS
+    WAS -->|6. 异步回传| Feishu
+    Feishu -->|显示消息| User
 ```
 
-## ⚙️ 快速开始
+## 🛠️ 功能模块
 
-### 1. 环境准备
+| 模块 | 描述 |
+| :--- | :--- |
+| **Vision Support** | 接入 Llama 4 Vision，支持自动识别用户报错截图 |
+| **RAG Retrieval** | 基于 SQLite 向量存储，支持 Top-K 语义匹配与相似度过滤 |
+| **Persistent Memory** | 会话记忆持久化，支持跨重启的多轮对话追踪 |
+| **Background Processing** | 异步响应机制，确保在高延迟 LLM 推理时不触发飞书超时重试 |
+
+## 🚀 快速启动
+
+### 1. 安装环境
 ```bash
+git clone https://github.com/myaistory/W.A.S
+cd W.A.S
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. 配置环境变量 (`.env`)
-```env
-FEISHU_APP_ID=your_id
-FEISHU_APP_SECRET=your_secret
-GROQ_API_KEY=your_key
-```
+### 2. 配置密钥
+复制 `.env.example` 到 `.env` 并填写相关 API Key。
 
-### 3. 运行服务
+### 3. 初始化知识库
 ```bash
-nohup python core/server.py > was.log 2>&1 &
+python3 core/vector_engine.py --rebuild
 ```
 
-## 📊 状态看板
-- **Webhook**: `http://<ip>:8001/event`
-- **Health**: `http://<ip>:8001/health`
+### 4. 运行服务
+```bash
+# 推荐使用 systemd 或 nohup
+nohup python3 core/server.py > was.log 2>&1 &
+```
 
-## 🛡️ 安全说明
-本项目已通过 `.gitignore` 自动过滤所有敏感 Key 及环境配置文件。请确保在生产环境中妥善保管 `.env` 文件。
+## 🤖 飞书机器人配置
+1.  **事件订阅**：开启“接收消息”权限。
+2.  **消息卡片**：开启“允许发送消息”。
+3.  **Webhook 地址**：`http://your_ip:8001/event`。
+
+## 📄 开源协议
+本项目采用 [MIT License](LICENSE) 开源。
 
 ---
-**Maintained by Random (💀) @ OpenClaw**
+**Powered by Random (💀)**

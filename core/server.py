@@ -36,13 +36,14 @@ def get_image_base64(message_id, image_key):
     token = get_tenant_access_token()
     if not token: return None
     
+    # 修正飞书图片资源接口路径
     url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{image_key}?type=image"
     headers = {'Authorization': f'Bearer {token}'}
     try:
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
             return base64.b64encode(r.content).decode('utf-8')
-        logger.error(f"[FEISHU] Image Download Failed: {r.status_code}")
+        logger.error(f"[FEISHU] Image Download Failed: {r.status_code} - {r.text}")
     except Exception as e:
         logger.error(f"[FEISHU] Image API Error: {e}")
     return None
@@ -61,31 +62,46 @@ async def health_check():
 
 @app.post('/event')
 async def handle_feishu_event(request: Request, background_tasks: BackgroundTasks):
-    data = await request.json()
+    raw_body = await request.body()
+    data = json.loads(raw_body)
+    
     if 'challenge' in data: return {'challenge': data['challenge']}
     
+    # 严格匹配 Event 2.0 路径
     event = data.get('event', {})
+    header = data.get('header', {})
+    event_type = header.get('event_type')
+
+    if event_type != 'im.message.receive_v1':
+        return {'status': 'ok'}
+
     message = event.get('message', {})
     sender = event.get('sender', {})
+    
+    # 从 RAW_EVENT 观察到的真实路径：event -> sender -> sender_id -> open_id
     open_id = sender.get('sender_id', {}).get('open_id')
-    msg_type = message.get('msg_type')
+    message_type = message.get('message_type') # 注意：RAW 中是 message_type 而不是 msg_type
 
-    if not open_id: return {'status': 'ok'}
+    if not open_id:
+        logger.warning(f"[DEBUG] OpenID not found. Body: {raw_body.decode('utf-8')[:300]}")
+        return {'status': 'ok'}
 
     image_b64 = None
     text_content = ""
 
     # 处理图片消息
-    if msg_type == 'image':
-        image_key = json.loads(message.get('content')).get('image_key')
+    if message_type == 'image':
+        content_raw = message.get('content')
+        image_key = json.loads(content_raw).get('image_key')
         message_id = message.get('message_id')
-        logger.info(f"[INBOUND] Image received from {open_id}")
+        logger.info(f"[INBOUND] Image from {open_id}, Key: {image_key}")
         image_b64 = get_image_base64(message_id, image_key)
-        text_content = "[图片分析请求]"
+        text_content = "请详细分析这张截图中的技术报错信息，并给出 SOP 建议。"
     
     # 处理文本消息
-    elif msg_type == 'text':
-        text_content = json.loads(message.get('content')).get('text', '').strip()
+    elif message_type == 'text':
+        content_raw = message.get('content')
+        text_content = json.loads(content_raw).get('text', '').strip()
         logger.info(f"[INBOUND] Text from {open_id}: {text_content[:30]}")
 
     if text_content or image_b64:
@@ -96,9 +112,9 @@ async def handle_feishu_event(request: Request, background_tasks: BackgroundTask
 def process_vision_and_reply(open_id, text, image_b64):
     try:
         history = session_manager.get_context(open_id)
+        # 调用视觉模型推理
         reply = ai_engine.ask(text, history=history, image_base64=image_b64)
         
-        # 存入记忆 (如果是图片，只存入 AI 的回答和 [发送了图片] 占位符)
         session_manager.add_message(open_id, "user", text if not image_b64 else "[用户发送了图片]")
         session_manager.add_message(open_id, "assistant", reply)
         

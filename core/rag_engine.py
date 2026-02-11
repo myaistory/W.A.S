@@ -55,8 +55,8 @@ Task: 根据提供的【参考知识库片段】回答老师的问题。如果�
             'Content-Type': 'application/json'
         }
         payload = {
-            # 切换为多模态 Vision 模型
-            'model': 'llama-3.2-11b-vision-preview',
+            # 升级为 Llama 4 Vision 模型
+            'model': 'meta-llama/llama-4-maverick-17b-128e-instruct',
             'messages': messages,
             'temperature': 0.1,
             'max_tokens': 1024
