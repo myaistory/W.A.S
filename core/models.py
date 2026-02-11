@@ -24,7 +24,7 @@ class Message(BaseModel):
 class Ticket(BaseModel):
     id: str
     user_id: str
-    category: str
+    category: Optional[str] = "自动识别"
     title: str
     description: str
     status: TicketStatus = TicketStatus.AI_PROCESSING
@@ -34,7 +34,7 @@ class Ticket(BaseModel):
 
 class TicketCreate(BaseModel):
     user_id: str
-    category: str
+    category: Optional[str] = "自动识别"
     title: str
     description: str
     image_url: Optional[str] = None
