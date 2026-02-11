@@ -3,59 +3,107 @@ from core.models import Ticket, TicketCreate, TicketStatus, Message, Role
 from core.rag_engine import ai_engine
 from core.logger import logger
 import uuid
+import sqlite3
+import json
 from datetime import datetime
+from typing import List, Optional
 
 router = APIRouter(prefix="/api/tickets", tags=["Tickets"])
 
-# 内存暂存池 (后期迁移到 PostgreSQL)
-TICKET_DB = {}
+DB_PATH = "data/sessions.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS tickets 
+                     (id TEXT PRIMARY KEY, user_id TEXT, category TEXT, title TEXT, 
+                      description TEXT, status TEXT, messages TEXT, created_at TIMESTAMP)''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 @router.post("/create", response_model=Ticket)
 async def create_ticket(data: TicketCreate, background_tasks: BackgroundTasks):
-    """网页端提单入口"""
     ticket_id = str(uuid.uuid4())[:8]
-    
-    # 初始化工单
     new_ticket = Ticket(
         id=ticket_id,
         user_id=data.user_id,
-        category=data.category,
+        category=data.category or "自动识别",
         title=data.title,
-        description=data.description
+        description=data.description,
+        status=TicketStatus.AI_PROCESSING,
+        messages=[Message(role=Role.USER, content=data.description)]
     )
     
-    # 记录初始消息
-    new_ticket.messages.append(Message(role=Role.USER, content=data.description))
-    TICKET_DB[ticket_id] = new_ticket
-    
-    logger.info(f"[WEB_TICKET] Created: {ticket_id} - {data.title}")
-    
-    # 异步触发 AI 诊断
+    save_ticket(new_ticket)
+    logger.info(f"[WEB_TICKET] Created: {ticket_id}")
     background_tasks.add_task(ai_diagnostic_process, ticket_id)
-    
     return new_ticket
 
-@router.get("/{ticket_id}", response_model=Ticket)
-async def get_ticket(ticket_id: str):
-    if ticket_id not in TICKET_DB:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    return TICKET_DB[ticket_id]
+@router.get("/list", response_model=List[Ticket])
+async def list_tickets(status: Optional[str] = None):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    if status:
+        cursor.execute("SELECT * FROM tickets WHERE status = ? ORDER BY created_at DESC", (status,))
+    else:
+        cursor.execute("SELECT * FROM tickets ORDER BY created_at DESC")
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    tickets = []
+    for row in rows:
+        tickets.append(Ticket(
+            id=row[0], user_id=row[1], category=row[2], title=row[3],
+            description=row[4], status=TicketStatus(row[5]),
+            messages=json.loads(row[6]), created_at=datetime.fromisoformat(row[7])
+        ))
+    return tickets
+
+@router.post("/{ticket_id}/respond")
+async def admin_respond(ticket_id: str, content: str):
+    """二线人工回复接口"""
+    ticket = get_ticket_from_db(ticket_id)
+    if not ticket: raise HTTPException(404)
+    
+    msg = Message(role=Role.ADMIN, content=content)
+    ticket.messages.append(msg)
+    ticket.status = TicketStatus.RESOLVED # 暂时简化逻辑
+    save_ticket(ticket)
+    return {"status": "ok"}
+
+def save_ticket(ticket: Ticket):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO tickets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                   (ticket.id, ticket.user_id, ticket.category, ticket.title, 
+                    ticket.description, ticket.status.value, 
+                    json.dumps([m.dict() for m in ticket.messages], default=str),
+                    ticket.created_at.isoformat()))
+    conn.commit()
+    conn.close()
+
+def get_ticket_from_db(ticket_id: str) -> Optional[Ticket]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row: return None
+    return Ticket(
+        id=row[0], user_id=row[1], category=row[2], title=row[3],
+        description=row[4], status=TicketStatus(row[5]),
+        messages=json.loads(row[6]), created_at=datetime.fromisoformat(row[7])
+    )
 
 async def ai_diagnostic_process(ticket_id: str):
-    """AI 自动化排查逻辑"""
-    ticket = TICKET_DB.get(ticket_id)
+    ticket = get_ticket_from_db(ticket_id)
     if not ticket: return
-
     try:
-        # 调用 RAG 引擎
-        ai_reply = ai_engine.ask(f"类别:{ticket.category} 标题:{ticket.title} 问题:{ticket.description}")
-        
-        # 记录 AI 回复
+        ai_reply = ai_engine.ask(f"问题:{ticket.title} 描述:{ticket.description}")
         ticket.messages.append(Message(role=Role.AI, content=ai_reply))
-        ticket.updated_at = datetime.now()
-        
-        logger.info(f"[AI_DIAGNOSTIC] Ticket {ticket_id} processed by AI.")
+        save_ticket(ticket)
     except Exception as e:
-        logger.error(f"[AI_DIAGNOSTIC] Failed for {ticket_id}: {e}")
-
-# 集成到主应用逻辑在 server.py 中完成
+        logger.error(f"AI Process failed: {e}")
