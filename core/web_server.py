@@ -99,11 +99,27 @@ def get_ticket_from_db(ticket_id: str) -> Optional[Ticket]:
     )
 
 async def ai_diagnostic_process(ticket_id: str):
+    """AI 自动化诊断逻辑：具备自动转人工能力"""
     ticket = get_ticket_from_db(ticket_id)
     if not ticket: return
     try:
+        # 调用 RAG 引擎获取回复
         ai_reply = ai_engine.ask(f"问题:{ticket.title} 描述:{ticket.description}")
-        ticket.messages.append(Message(role=Role.AI, content=ai_reply))
+        
+        # 1. 自动转人工判断逻辑：如果检索结果为 NO_MATCH 或 AI 明确回复不知道
+        if "很抱歉" in ai_reply or "尚未收录" in ai_reply or "NO_MATCH" in ai_reply:
+            ticket.status = TicketStatus.HUMAN_NEEDED
+            ticket.messages.append(Message(role=Role.AI, content="[系统通知] AI 无法从现有知识库找到解决方案，正在为您自动转接二线技术支持..."))
+            logger.info(f"[AUTO_ESCALATE] Ticket {ticket_id} escalated due to knowledge gap.")
+        else:
+            ticket.messages.append(Message(role=Role.AI, content=ai_reply))
+            # AI 成功匹配后，状态依然保持 AI_PROCESSING，直到用户确认或 AI 无法继续
+            
         save_ticket(ticket)
+        
     except Exception as e:
         logger.error(f"AI Process failed: {e}")
+        # 如果推理出错，也强制转人工，防止流程阻塞
+        ticket.status = TicketStatus.HUMAN_NEEDED
+        ticket.messages.append(Message(role=Role.AI, content="[系统错误] 推理核心暂不可用，已为您自动转接人工。"))
+        save_ticket(ticket)
