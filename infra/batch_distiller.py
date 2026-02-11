@@ -2,6 +2,10 @@ import pandas as pd
 import json
 import os
 import re
+import sys
+import os
+# 添加项目根目录到路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logger import logger
 
 def clean_text(text):
@@ -28,18 +32,13 @@ def distil_tickets(file_path, output_path):
         logger.info(f"[Distiller] Columns found: {df.columns.tolist()}")
 
         # 尝试寻找关键列
-        desc_col = next((c for c in df.columns if '描述' in c or '内容' in c or 'Description' in c), None)
-        sol_col = next((c for c in df.columns if '方案' in c or '解决' in c or 'Solution' in c), None)
-        status_col = next((c for c in df.columns if '状态' in c or 'Status' in c), None)
+        desc_col = '问题现象' # 根据日志修正
+        sol_col = '解决方式'  # 根据日志修正
+        status_col = None     # 该表似乎没有状态列，或者状态隐含在解决方式中
 
-        if not desc_col or not sol_col:
-            logger.error("[Distiller] Required columns (Description/Solution) not found in Excel.")
+        if desc_col not in df.columns or sol_col not in df.columns:
+            logger.error(f"[Distiller] Required columns {desc_col}/{sol_col} not found.")
             return
-
-        # 3. 筛选已解决的工单
-        if status_col:
-            df = df[df[status_col].astype(str).str.contains('已解决|已关闭|Finished|Closed', na=False)]
-            logger.info(f"[Distiller] Filtered resolved tickets: {len(df)}")
 
         knowledge_base = []
         seen_questions = set()
@@ -48,8 +47,16 @@ def distil_tickets(file_path, output_path):
         for _, row in df.iterrows():
             question = clean_text(row[desc_col])
             answer = clean_text(row[sol_col])
-
-            if len(question) < 5 or len(answer) < 5:
+            
+            # 强化清洗：过滤掉太短或明显无意义的回答
+            if len(str(question)) < 4 or len(str(answer)) < 4:
+                continue
+            
+            # 过滤掉全横杠或全符号的噪音
+            if re.match(r'^[_\-\s\./\\]+$', str(question)) or re.match(r'^[_\-\s\./\\]+$', str(answer)):
+                continue
+            
+            if '测试' in str(question) or 'test' in str(question).lower():
                 continue
 
             # 简易去重逻辑：如果问题前 20 个字完全一样，视为重复
