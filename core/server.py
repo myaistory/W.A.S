@@ -13,10 +13,13 @@ sys.path.append('/home/lianwei_zlw/Walnut-AI-Support/core')
 from rag_engine import ai_engine
 from logger import logger
 from session_manager import session_manager
+from web_server import router as web_router  # 引入 Web 路由
 
 load_dotenv()
 
-app = FastAPI(title='Walnut AI Support Node (Vision-Enabled)')
+app = FastAPI(title='Walnut AI Support Platform (Omni-Channel)')
+# 挂载 Web 工单 API
+app.include_router(web_router)
 START_TIME = time.time()
 APP_ID = os.getenv('FEISHU_APP_ID')
 APP_SECRET = os.getenv('FEISHU_APP_SECRET')
@@ -111,6 +114,14 @@ async def handle_feishu_event(request: Request, background_tasks: BackgroundTask
 
 def process_vision_and_reply(open_id, text, image_b64):
     try:
+        # 处理人工请求
+        if text == "人工":
+            logger.info(f"[ALERT] User {open_id} requested human support.")
+            # 这里的通知 ID 可以是你的 OpenID
+            # send_message("YOUR_OPEN_ID", f"🚨 老师 {open_id} 请求人工协助，请及时处理。")
+            send_message(open_id, "收到您的请求！已通知二线技术老师，请稍候。您可以先发送报错截图，方便老师快速定位问题。")
+            return
+
         history = session_manager.get_context(open_id)
         # 调用视觉模型推理
         reply = ai_engine.ask(text, history=history, image_base64=image_b64)
