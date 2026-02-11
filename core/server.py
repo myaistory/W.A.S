@@ -4,6 +4,7 @@ import json
 import requests
 import os
 import time
+import base64
 from dotenv import load_dotenv
 
 # 引入核心组件
@@ -15,7 +16,7 @@ from session_manager import session_manager
 
 load_dotenv()
 
-app = FastAPI(title='Walnut AI Support Node (LLM-Powered)')
+app = FastAPI(title='Walnut AI Support Node (Vision-Enabled)')
 START_TIME = time.time()
 APP_ID = os.getenv('FEISHU_APP_ID')
 APP_SECRET = os.getenv('FEISHU_APP_SECRET')
@@ -27,23 +28,36 @@ def get_tenant_access_token():
         r = requests.post(url, json=payload, timeout=10)
         return r.json().get('tenant_access_token')
     except Exception as e:
-        logger.error(f'[FEISHU] Failed to get token: {e}')
+        logger.error(f'[FEISHU] Token Error: {e}')
         return None
+
+def get_image_base64(message_id, image_key):
+    """从飞书下载图片并转为 Base64"""
+    token = get_tenant_access_token()
+    if not token: return None
+    
+    url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{image_key}?type=image"
+    headers = {'Authorization': f'Bearer {token}'}
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            return base64.b64encode(r.content).decode('utf-8')
+        logger.error(f"[FEISHU] Image Download Failed: {r.status_code}")
+    except Exception as e:
+        logger.error(f"[FEISHU] Image API Error: {e}")
+    return None
 
 def send_message(receive_id, content):
     token = get_tenant_access_token()
     if not token: return
-    url = f'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id'
+    url = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id'
     headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
     payload = {'receive_id': receive_id, 'msg_type': 'text', 'content': json.dumps({'text': content})}
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=10)
-    except Exception as e:
-        logger.error(f'[FEISHU] Send message failed: {e}')
+    requests.post(url, headers=headers, json=payload, timeout=10)
 
 @app.get("/health")
 async def health_check():
-    return {"status": "online", "uptime": int(time.time() - START_TIME)}
+    return {"status": "online", "vision": "enabled", "uptime": int(time.time() - START_TIME)}
 
 @app.post('/event')
 async def handle_feishu_event(request: Request, background_tasks: BackgroundTasks):
@@ -53,38 +67,44 @@ async def handle_feishu_event(request: Request, background_tasks: BackgroundTask
     event = data.get('event', {})
     message = event.get('message', {})
     sender = event.get('sender', {})
+    open_id = sender.get('sender_id', {}).get('open_id')
+    msg_type = message.get('msg_type')
+
+    if not open_id: return {'status': 'ok'}
+
+    image_b64 = None
+    text_content = ""
+
+    # 处理图片消息
+    if msg_type == 'image':
+        image_key = json.loads(message.get('content')).get('image_key')
+        message_id = message.get('message_id')
+        logger.info(f"[INBOUND] Image received from {open_id}")
+        image_b64 = get_image_base64(message_id, image_key)
+        text_content = "[图片分析请求]"
     
-    if message and 'content' in message:
-        try:
-            content_json = json.loads(message['content'])
-            text = content_json.get('text', '').strip()
-            open_id = sender.get('sender_id', {}).get('open_id')
-            
-            if text:
-                logger.info(f'[INBOUND] User:{open_id} Query:"{text[:50]}"')
-                # 异步处理
-                background_tasks.add_task(process_and_reply, open_id, text)
-        except Exception as e:
-            logger.error(f'[PROCESSOR] Error: {e}')
+    # 处理文本消息
+    elif msg_type == 'text':
+        text_content = json.loads(message.get('content')).get('text', '').strip()
+        logger.info(f"[INBOUND] Text from {open_id}: {text_content[:30]}")
+
+    if text_content or image_b64:
+        background_tasks.add_task(process_vision_and_reply, open_id, text_content, image_b64)
                 
     return {'status': 'ok'}
 
-def process_and_reply(open_id, text):
+def process_vision_and_reply(open_id, text, image_b64):
     try:
-        # 1. 获取历史记忆
         history = session_manager.get_context(open_id)
+        reply = ai_engine.ask(text, history=history, image_base64=image_b64)
         
-        # 2. 调用 AI (传入记忆)
-        reply = ai_engine.ask(text, history=history)
-        
-        # 3. 更新记忆 (存入 User 提问 和 Assistant 回复)
-        session_manager.add_message(open_id, "user", text)
+        # 存入记忆 (如果是图片，只存入 AI 的回答和 [发送了图片] 占位符)
+        session_manager.add_message(open_id, "user", text if not image_b64 else "[用户发送了图片]")
         session_manager.add_message(open_id, "assistant", reply)
         
-        logger.info(f'[OUTBOUND] User:{open_id} Context_Depth:{len(history)}')
         send_message(open_id, reply)
     except Exception as e:
-        logger.error(f'[AI_CORE] Async processing failed: {e}')
+        logger.error(f'[AI_CORE] Vision processing failed: {e}')
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=8001)

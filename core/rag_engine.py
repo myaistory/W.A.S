@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import base64
 from dotenv import load_dotenv
 from logger import logger
 
@@ -13,54 +14,62 @@ class GroqEngine:
         from vector_engine import VectorSearchEngine
         self.vs_engine = VectorSearchEngine(kb_path='/home/lianwei_zlw/Walnut-AI-Support/data/walnut_kb.json')
 
-    def ask(self, user_query: str, history: list = None):
+    def ask(self, user_query: str, history: list = None, image_base64: str = None):
         """
-        user_query: 当前提问
-        history: 历史对话列表 [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+        支持多模态推理
+        image_base64: 图片的 Base64 编码字符串
         """
         # P2: 语义检索获取最新上下文
         context = self.vs_engine.search(user_query, top_k=2)
         
         system_prompt = f"""
 Role: 核桃编程金牌技术支持工程师 (Walnut Technical Support)
-Task: 根据提供的【参考知识库片段】回答老师的问题。
+Task: 根据提供的【参考知识库片段】回答老师的问题。如果老师提供了截图，请分析截图中的报错信息。
 
 【参考知识库片段】:
 {context}
 
 要求：
-1. 仅根据知识库提供的内容回答，严禁凭空编造事实或提供通用常识（如检查网络、检查权限等无用建议）。
-2. 如果知识库中没有相关解决步骤，请直接回复：“很抱歉，当前知识库尚未收录此问题的具体解决方案，为了不误导您，请联系【人工客服】进行深度排查。”
-3. 语气专业，禁止重复用户已尝试过的步骤。
+1. 仅根据知识库回答，禁止编造。
+2. 如果有图片，请先识别图片中的错误弹窗、文字或异常现象，再匹配 SOP。
+3. 语气专业，简洁。
 """
-        # 构建消息流
-        messages = [{"role": "system", "content": system_prompt}]
+        # 构建消息内容
+        content = [{"type": "text", "text": user_query}]
         
-        # 注入历史记忆
+        if image_base64:
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_base64}"
+                }
+            })
+
+        messages = [{"role": "system", "content": system_prompt}]
         if history:
             messages.extend(history)
-            
-        # 注入当前问题
-        messages.append({"role": "user", "content": user_query})
+        messages.append({"role": "user", "content": content})
 
         headers = {
             'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'
         }
         payload = {
-            'model': 'llama-3.3-70b-versatile',
+            # 切换为多模态 Vision 模型
+            'model': 'llama-3.2-11b-vision-preview',
             'messages': messages,
-            'temperature': 0.1
+            'temperature': 0.1,
+            'max_tokens': 1024
         }
         try:
-            r = requests.post(self.url, headers=headers, json=payload, timeout=15)
+            r = requests.post(self.url, headers=headers, json=payload, timeout=20)
             if r.status_code == 200:
                 return r.json()['choices'][0]['message']['content']
             else:
-                logger.error(f"[Groq] API Error: {r.status_code} - {r.text}")
-                return f'[SYSTEM_ERROR] Groq API {r.status_code}'
+                logger.error(f"[Groq-Vision] API Error: {r.status_code} - {r.text}")
+                return f'[SYSTEM_ERROR] Vision Core Error {r.status_code}'
         except Exception as e:
-            logger.error(f"[Groq] Connection Failed: {e}")
-            return f'[SYSTEM_ERROR] Connection Failed'
+            logger.error(f"[Groq-Vision] Connection Failed: {e}")
+            return f'[SYSTEM_ERROR] Vision Core Offline'
 
 ai_engine = GroqEngine()
